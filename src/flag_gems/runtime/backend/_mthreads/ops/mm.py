@@ -19,7 +19,8 @@ EXPAND_CONFIG_FILENAME = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "mm_mthreads_expand.yaml")
 )
 
-SQMMA_SWITCH = False
+SQMMA_SWITCH = True
+
 
 def is_supported_sqmma_layout(tensor):
     return tensor.is_contiguous() or (
@@ -505,20 +506,36 @@ def mm_sqmma_kernel(
     tme_load_ab_dtype = ab_dtype
     c_store_dtype = c_dtype
     for k in range(0, tl.cdiv(K, BLOCK_K)):
-        a = tl._experimental_descriptor_load(
-            a_desc_ptr,
-            [offs_am, offs_k],
-            [BLOCK_M, BLOCK_K],
-            tme_load_ab_dtype,
-            is_transpose_a,
-        )
-        b = tl._experimental_descriptor_load(
-            b_desc_ptr,
-            [offs_k, offs_bn],
-            [BLOCK_K, BLOCK_N],
-            tme_load_ab_dtype,
-            is_transpose_b,
-        )
+        if is_transpose_a:
+            a = tl._experimental_descriptor_load(
+                a_desc_ptr,
+                [offs_k, offs_am],
+                [BLOCK_K, BLOCK_M],
+                tme_load_ab_dtype,
+            )
+            a = tl.trans(a)
+        else:
+            a = tl._experimental_descriptor_load(
+                a_desc_ptr,
+                [offs_am, offs_k],
+                [BLOCK_M, BLOCK_K],
+                tme_load_ab_dtype,
+            )
+        if is_transpose_b:
+            b = tl._experimental_descriptor_load(
+                b_desc_ptr,
+                [offs_bn, offs_k],
+                [BLOCK_N, BLOCK_K],
+                tme_load_ab_dtype,
+            )
+            b = tl.trans(b)
+        else:
+            b = tl._experimental_descriptor_load(
+                b_desc_ptr,
+                [offs_k, offs_bn],
+                [BLOCK_K, BLOCK_N],
+                tme_load_ab_dtype,
+            )
         accumulator += tl.dot(a, b, out_dtype=tl.float32, allow_tf32=False)
         offs_k += BLOCK_K
     accumulator = accumulator.to(c_store_dtype)
@@ -592,19 +609,33 @@ def mm(a, b):
     b_dtype = b.dtype
     M, K = a.shape
     _, N = b.shape
-    if N == 1:
-        c_dtype = get_higher_dtype(a_dtype, b_dtype)
-        c = torch.empty((M, N), device=a.device, dtype=c_dtype)
-        return gemv_mm(a, b, c, M, K)
-    if is_sqmma_compatible(a, b, N, K):
-        GROUP_M = 8
-        return mm_sqmma(
-            a,
-            b,
-            M,
-            N,
-            K,
-            GROUP_M,
-        )
-    else:
-        return mm_fma(a, b)
+    # fp32 does not support MMA instructions, only enable SQMMA for fp16/bf16
+    need_sqmma = a_dtype != torch.float32 and b_dtype != torch.float32
+    prev_sqmma = None
+    if need_sqmma:
+        prev_sqmma = os.environ.get("MUSA_ENABLE_SQMMA")
+        os.environ["MUSA_ENABLE_SQMMA"] = "1"
+    try:
+        if N == 1:
+            c_dtype = get_higher_dtype(a_dtype, b_dtype)
+            c = torch.empty((M, N), device=a.device, dtype=c_dtype)
+            return gemv_mm(a, b, c, M, K)
+
+        if is_sqmma_compatible(a, b, N, K):
+            GROUP_M = 8
+            return mm_sqmma(
+                a,
+                b,
+                M,
+                N,
+                K,
+                GROUP_M,
+            )
+        else:
+            return mm_fma(a, b)
+    finally:
+        if need_sqmma:
+            if prev_sqmma is None:
+                os.environ.pop("MUSA_ENABLE_SQMMA", None)
+            else:
+                os.environ["MUSA_ENABLE_SQMMA"] = prev_sqmma
