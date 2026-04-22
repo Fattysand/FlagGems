@@ -25,7 +25,7 @@ EXPAND_CONFIG_FILENAME = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "bmm_mthreads_expand.yaml")
 )
 
-SQMMA_SWITCH = True
+SQMMA_ON = True
 
 def get_expand_config(op):
     default_strategies = {
@@ -393,7 +393,7 @@ def bmm(a, b):
     b_dtype = b.dtype
     batch, M, K = a.shape
     _, _, N = b.shape
-    use_sqmma = should_enable_sqmma(a_dtype, b_dtype, M, N, K)
+    use_sqmma = should_enable_sqmma(a_dtype, b_dtype, M, N, K) and SQMMA_ON
     if use_sqmma:
         return bmm_sqmma(
             a,

@@ -21,7 +21,7 @@ logger = logging.getLogger(
     f'flag_gems.runtime.backend._mthreads.ops.{__name__.split(".")[-1]}'
 )
 
-SQMMA_SWITCH = True
+SQMMA_ON = True
 
 EXPAND_CONFIG_FILENAME = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "addmm_mthreads_expand.yaml")
@@ -414,7 +414,7 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     b_dtype = mat2.dtype
     M, K = mat1.shape
     _, N = mat2.shape
-    use_sqmma = should_enable_sqmma(a_dtype, b_dtype, M, N, K) and SQMMA_SWITCH
+    use_sqmma = should_enable_sqmma(a_dtype, b_dtype, M, N, K) and SQMMA_ON
 
     if use_sqmma:
         return addmm_sqmma(

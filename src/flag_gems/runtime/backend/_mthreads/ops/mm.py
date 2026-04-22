@@ -19,7 +19,7 @@ EXPAND_CONFIG_FILENAME = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "mm_mthreads_expand.yaml")
 )
 
-SQMMA_SWITCH = True
+SQMMA_ON = True
 
 
 def is_supported_sqmma_layout(tensor):
@@ -31,7 +31,7 @@ def is_supported_sqmma_layout(tensor):
 def is_sqmma_compatible(a, b, N, K):
     return (
         os.getenv("MUSA_ENABLE_SQMMA", "0") == "1"
-        and SQMMA_SWITCH
+        and SQMMA_ON
         and a.dim() == 2
         and b.dim() == 2
         and a.dtype == b.dtype
