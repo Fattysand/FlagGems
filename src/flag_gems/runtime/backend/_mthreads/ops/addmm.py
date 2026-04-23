@@ -261,7 +261,17 @@ def get_triton_type(elem_type):
     return type_map.get(elem_type, None)
 
 
-def addmm_sqmma(mat1, mat2, bias, elem_type, alpha, beta, M, N, K):
+def addmm_sqmma(
+        mat1, 
+        mat2, 
+        bias, 
+        elem_type, 
+        alpha, 
+        beta, 
+        M, 
+        N, 
+        K
+    ):
     logger.debug("GEMS_MTHREADS ADDMM(SQMMA)")
     device = mat1.device
     assert broadcastable_to(
