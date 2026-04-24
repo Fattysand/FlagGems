@@ -838,8 +838,6 @@ class ParallelSparseAttentionBenchmark(ParallelBenchmarkMixin, blas_perf.Benchma
     ],
 )
 def test_blas_benchmark(op_name, torch_op, input_fn, bench_cls):
-    # if flag_gems.vendor_name == "mthreads" and op_name not in ("mm", "baddbmm"):
-    #     os.environ["MUSA_ENABLE_SQMMA"] = "1"
 
     bench = bench_cls(
         input_fn=input_fn,
@@ -848,9 +846,6 @@ def test_blas_benchmark(op_name, torch_op, input_fn, bench_cls):
         dtypes=blas_perf.FLOAT_DTYPES,
     )
     bench.run()
-
-    # if flag_gems.vendor_name == "mthreads" and op_name not in ("mm", "baddbmm"):
-    #     del os.environ["MUSA_ENABLE_SQMMA"]
 
 
 @pytest.mark.w8a8_block_fp8_matmul
