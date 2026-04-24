@@ -17,7 +17,10 @@ EXPAND_CONFIG_FILENAME = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "mm_mthreads_expand.yaml")
 )
 
-SQMMA_ON = True
+# Module-level capability flag: evaluated once at import time, then reused as
+# a constant for the entire process lifetime with no repeated parsing overhead.
+# False when Triton < 3.2 (e.g. 3.1), True when Triton >= 3.2.
+SQMMA_ON = tuple(int(x) for x in triton.__version__.split(".")[:2]) >= (3, 2)
 
 
 def is_supported_sqmma_layout(tensor):
@@ -28,8 +31,7 @@ def is_supported_sqmma_layout(tensor):
 
 def is_sqmma_compatible(a, b, N, K):
     return (
-        os.getenv("MUSA_ENABLE_SQMMA", "0") == "1"
-        and SQMMA_ON
+        SQMMA_ON
         and a.dim() == 2
         and b.dim() == 2
         and a.dtype == b.dtype
@@ -502,10 +504,11 @@ def mm(a, b):
     _, N = b.shape
     # fp32 does not support MMA instructions, only enable SQMMA for fp16/bf16
     need_sqmma = a_dtype != torch.float32 and b_dtype != torch.float32
-    prev_sqmma = None
+    prev_sqmma = os.environ.get("MUSA_ENABLE_SQMMA")
     if need_sqmma:
-        prev_sqmma = os.environ.get("MUSA_ENABLE_SQMMA")
         os.environ["MUSA_ENABLE_SQMMA"] = "1"
+    else:
+        os.environ.pop("MUSA_ENABLE_SQMMA", None)
     try:
         if N == 1:
             c_dtype = get_higher_dtype(a_dtype, b_dtype)
@@ -525,8 +528,7 @@ def mm(a, b):
         else:
             return mm_fma(a, b)
     finally:
-        if need_sqmma:
-            if prev_sqmma is None:
-                os.environ.pop("MUSA_ENABLE_SQMMA", None)
-            else:
-                os.environ["MUSA_ENABLE_SQMMA"] = prev_sqmma
+        if prev_sqmma is None:
+            os.environ.pop("MUSA_ENABLE_SQMMA", None)
+        else:
+            os.environ["MUSA_ENABLE_SQMMA"] = prev_sqmma

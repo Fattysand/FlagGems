@@ -17,12 +17,7 @@ mm_general_tma:
       - 64
       - 128
     stages:
-      - 3
-      - 4
-      - 5
-      - 6
-      - 7
-      - 8
+      - 1
     warps:
       - 4
       - 8

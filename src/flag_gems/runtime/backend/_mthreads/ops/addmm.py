@@ -26,22 +26,30 @@ EXPAND_CONFIG_FILENAME = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "addmm_mthreads_expand.yaml")
 )
 
+def is_supported_sqmma_layout(tensor):
+    return tensor.is_contiguous() or (
+        tensor.stride(0) == 1 and tensor.stride(1) == tensor.shape[0]
+    )
+
+
+def is_sqmma_compatible(a, b, N, K):
+    return (
+        os.getenv("MUSA_ENABLE_SQMMA", "0") == "1"
+        and SQMMA_ON
+        and a.dim() == 2
+        and b.dim() == 2
+        and a.dtype == b.dtype
+        and a.dtype in (torch.float16, torch.bfloat16)
+        and is_supported_sqmma_layout(a)
+        and is_supported_sqmma_layout(b)
+        and N % 8 == 0
+        and K % 8 == 0
+    )
 
 @libentry()
 @libtuner(
-    configs=runtime.ops_get_configs(
-        "addmm", yaml_path=EXPAND_CONFIG_FILENAME
-    )
-    if os.environ.get("USE_FLAGTUNE") == "1"
-    else runtime.get_tuned_config("addmm"),
+    configs=runtime.get_tuned_config("addmm"),
     key=["M", "N", "K"],
-    strategy=runtime.get_expand_config(
-        "addmm", yaml_path=EXPAND_CONFIG_FILENAME
-    )["strategy"]
-    if os.environ.get("USE_FLAGTUNE") == "1"
-    else ["default", "default", "default"],
-    warmup=5,
-    rep=5,
 )
 @triton.jit(do_not_specialize=["alpha", "beta"])
 def addmm_kernel(
@@ -333,23 +341,30 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     b_dtype = mat2.dtype
     M, K = mat1.shape
     _, N = mat2.shape
-    use_sqmma = should_enable_sqmma(a_dtype, b_dtype, M, N, K) and SQMMA_ON
 
-    if use_sqmma:
-        return addmm_sqmma(
-            mat1,
-            mat2,
-            bias,
-            a_dtype,
-            alpha,
-            beta,
-            M,
-            N,
-            K,
-        )
+    need_sqmma = a_dtype != torch.float32 and b_dtype != torch.float32
+    prev_sqmma = os.environ.get("MUSA_ENABLE_SQMMA")
+    if need_sqmma:
+        os.environ["MUSA_ENABLE_SQMMA"] = "1"
     else:
-        enable_sqmma = os.environ.pop("MUSA_ENABLE_SQMMA", None)
-        result = addmm_fma(bias, mat1, mat2, alpha=alpha, beta=beta)
-        if enable_sqmma:
-            os.environ["MUSA_ENABLE_SQMMA"] = enable_sqmma
-        return result
+        os.environ.pop("MUSA_ENABLE_SQMMA", None)
+    try:
+        if is_sqmma_compatible(mat1, mat2, N, K):
+            return addmm_sqmma(
+                mat1,
+                mat2,
+                bias,
+                a_dtype,
+                alpha,
+                beta,
+                M,
+                N,
+                K,
+            )
+        else:
+            return addmm_fma(bias, mat1, mat2, alpha=alpha, beta=beta)
+    finally:
+        if prev_sqmma is None:
+            os.environ.pop("MUSA_ENABLE_SQMMA", None)
+        else:
+            os.environ["MUSA_ENABLE_SQMMA"] = prev_sqmma

@@ -19,7 +19,7 @@ DEFAULT_EXPAND_CONFIG_PATH = os.path.normpath(
 
 
 DEFAULT_STRATEGIES = {
-    "bmm": ["log", "log", "log", "align32", "align32"],
+    "bmm": ["align32", "align32", "align32", "align32", "align32"],
     "addmm": ["align32", "align32", "align32"],
     "baddbmm": ["align32", "align32", "align32"],
     "mv": ["align32", "align32"],
@@ -49,8 +49,8 @@ DEFAULT_STRATEGIES = {
     "gemv": ["align32", "align32", "align32", "default"],
     "sparse_attention": ["align32", "align32", "align32"],
     "mm": ["align32", "align32", "align32", "align32", "align32"],
-    "bmm_sqmma": ["default", "default", "default"],
-    "addmm_sqmma": ["default", "default", "default"],
+    "bmm_sqmma": ["align32", "align32", "align32"],
+    "addmm_sqmma": ["align32", "align32", "align32"],
 }
 
 OP_KEY_ORDERS = {

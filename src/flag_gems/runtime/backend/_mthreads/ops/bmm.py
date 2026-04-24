@@ -4,8 +4,6 @@ import os
 import torch
 import triton
 import triton.language as tl
-import yaml
-
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry, libtuner
@@ -27,98 +25,29 @@ EXPAND_CONFIG_FILENAME = os.path.normpath(
 
 SQMMA_ON = True
 
-def get_expand_config(op):
-    default_strategies = {
-        "bmm": ["default", "default", "default"],
-        "bmm_sqmma": ["default", "default", "default"],
-    }
-    op_key_orders = {
-        "bmm": ["M", "N", "K"],
-        "bmm_sqmma": ["M", "N", "K"],
-    }
-    op_meta_map = {
-        "bmm": {
-            "BM": "BLOCK_SIZE_M",
-            "BN": "BLOCK_SIZE_N",
-            "BK": "BLOCK_SIZE_K",
-        },
-        "bmm_sqmma": {
-            "BM": "BLOCK_SIZE_M",
-            "BN": "BLOCK_SIZE_N",
-            "BK": "BLOCK_SIZE_K",
-        },
-    }
-
-    if op not in default_strategies:
-        return -1
-
-    default_strategy = default_strategies[op]
-    if not os.path.exists(EXPAND_CONFIG_FILENAME):
-        return -1
-
-    try:
-        with open(EXPAND_CONFIG_FILENAME, "r") as file:
-            config = yaml.safe_load(file) or {}
-
-        expand_configs = config.get(op)
-        gen_config = None
-        strategy_config = None
-        for single_config in expand_configs:
-            if isinstance(single_config, dict) and "param_map" in single_config:
-                gen_config = single_config
-            if isinstance(single_config, dict) and "strategy" in single_config:
-                strategy_config = single_config.get("strategy")
-
-        param_map = gen_config["param_map"]
-        meta_map = param_map["META"]
-
-        strategy = default_strategy
-        if isinstance(strategy_config, dict):
-            strategy = [
-                strategy_config.get(k, default_strategy[idx])
-                for idx, k in enumerate(op_key_orders[op])
-            ]
-
-        ranges = {}
-        for range_key, meta_key in op_meta_map[op].items():
-            ranges[range_key] = gen_config[meta_map[meta_key]]
-        ranges["s"] = gen_config[param_map["num_stages"]]
-        ranges["w"] = gen_config[param_map["num_warps"]]
-
-        return {"ranges": ranges, "strategy": strategy}
-    except Exception:
-        return -1
+def is_supported_sqmma_layout(tensor):
+    return tensor.is_contiguous() or (
+        tensor.stride(0) == 1 and tensor.stride(1) == tensor.shape[0]
+    )
 
 
-def bmm_get_configs():
-    if os.environ.get("USE_FLAGTUNE") == "1":
-        expand_config = get_expand_config("bmm")
-        if expand_config != -1:
-            ranges = expand_config["ranges"]
-            return [
-                triton.Config(
-                    {"BLOCK_SIZE_M": BM, "BLOCK_SIZE_N": BN, "BLOCK_SIZE_K": BK},
-                    num_stages=s,
-                    num_warps=w,
-                )
-                for BM in ranges["BM"]
-                for BN in ranges["BN"]
-                for BK in ranges["BK"]
-                for s in ranges["s"]
-                for w in ranges["w"]
-            ]
-    return runtime.get_tuned_config("bmm")
+def is_sqmma_compatible(a, b, N, K):
+    return (
+        SQMMA_ON
+        and a.dtype == b.dtype
+        and a.dtype in (torch.float16, torch.bfloat16)
+        and is_supported_sqmma_layout(a)
+        and is_supported_sqmma_layout(b)
+        and N % 8 == 0
+        and K % 8 == 0
+    )
 
 
 @libentry()
 @libtuner(
-    configs=bmm_get_configs(),
+    configs=runtime.get_tuned_config("bmm"),
     key=["M", "N", "K"],
-    strategy=get_expand_config("bmm")["strategy"]
-    if os.environ.get("USE_FLAGTUNE") == "1" and get_expand_config("bmm") != -1
-    else ["log", "log", "log"],
-    warmup=5,
-    rep=5,
+    strategy=["align32", "align32", "align32"],
 )
 @triton.heuristics(runtime.get_heuristic_config("bmm"))
 @triton.jit
@@ -268,41 +197,28 @@ def bmm_sqmma_descriptor_pre_hook(nargs):
     )
 
 
-def bmm_sqmma_get_configs(pre_hook=bmm_sqmma_descriptor_pre_hook):
-    if os.environ.get("USE_FLAGTUNE") == "1":
-        expand_config = get_expand_config("bmm_sqmma")
-        if expand_config != -1:
-            ranges = expand_config["ranges"]
-            return [
-                triton.Config(
-                    {"BLOCK_SIZE_M": BM, "BLOCK_SIZE_N": BN, "BLOCK_SIZE_K": BK},
-                    num_stages=s,
-                    num_warps=w,
-                    pre_hook=pre_hook,
-                )
-                for BM in ranges["BM"]
-                for BN in ranges["BN"]
-                for BK in ranges["BK"]
-                for s in ranges["s"]
-                for w in ranges["w"]
-            ]
-    return [
+@libentry()
+@libtuner(
+    configs=runtime.ops_get_configs(
+        "bmm_sqmma",
+        pre_hook=bmm_sqmma_descriptor_pre_hook,
+        yaml_path=EXPAND_CONFIG_FILENAME,
+    )
+    if os.environ.get("USE_FLAGTUNE") == "1"
+    else [
         triton.Config(
             {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 64},
             num_stages=1,
             num_warps=4,
-            pre_hook=pre_hook,
-        ),
-    ]
-
-
-@libentry()
-@libtuner(
-    configs=bmm_sqmma_get_configs(),
+            pre_hook=bmm_sqmma_descriptor_pre_hook,
+        )
+    ],
     key=["M", "N", "K"],
-    strategy=get_expand_config("bmm_sqmma")["strategy"]
-    if os.environ.get("USE_FLAGTUNE") == "1" and get_expand_config("bmm_sqmma") != -1
-    else ["default", "default", "default"],
+    strategy=runtime.get_expand_config(
+        "bmm_sqmma", yaml_path=EXPAND_CONFIG_FILENAME
+    )["strategy"][:3]
+    if os.environ.get("USE_FLAGTUNE") == "1"
+    else ["align32", "align32", "align32"],
     warmup=5,
     rep=5,
 )
@@ -393,20 +309,27 @@ def bmm(a, b):
     b_dtype = b.dtype
     batch, M, K = a.shape
     _, _, N = b.shape
-    use_sqmma = should_enable_sqmma(a_dtype, b_dtype, M, N, K) and SQMMA_ON
-    if use_sqmma:
-        return bmm_sqmma(
-            a,
-            b,
-            a_dtype,
-            batch,
-            M,
-            N,
-            K,
-        )
+    need_sqmma = a_dtype != torch.float32 and b_dtype != torch.float32
+    prev_sqmma = os.environ.get("MUSA_ENABLE_SQMMA")
+    if need_sqmma:
+        os.environ["MUSA_ENABLE_SQMMA"] = "1"
     else:
-        enable_sqmma = os.environ.pop("MUSA_ENABLE_SQMMA", None)
-        result = bmm_fma(a, b)
-        if enable_sqmma:
-            os.environ["MUSA_ENABLE_SQMMA"] = enable_sqmma
-        return result
+        os.environ.pop("MUSA_ENABLE_SQMMA", None)
+    try:
+        if is_sqmma_compatible(a, b, N, K):
+            return bmm_sqmma(
+                a, 
+                b, 
+                a_dtype, 
+                batch, 
+                M, 
+                N, 
+                K
+            )
+        else:
+            return bmm_fma(a, b)
+    finally:
+        if prev_sqmma is None:
+            os.environ.pop("MUSA_ENABLE_SQMMA", None)
+        else:
+            os.environ["MUSA_ENABLE_SQMMA"] = prev_sqmma
